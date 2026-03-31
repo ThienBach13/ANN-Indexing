@@ -24,7 +24,7 @@ namespace ANNIndexingSample.Services
                             ) c";
 
             using SqlCommand cmd = new(sql, conn);
-            cmd.CommandTimeout = 120; // 10k rows might take a moment
+            cmd.CommandTimeout = 120; 
             int rows = await cmd.ExecuteNonQueryAsync();
             Console.WriteLine($"Index built: {rows} movies assigned to clusters.");
         }
@@ -67,7 +67,7 @@ namespace ANNIndexingSample.Services
                 }
 
                 transaction.Commit();
-                Console.WriteLine($"Step 1 Success: {k} Centroids created in MovieCentroids table.");
+                Console.WriteLine($"Success: {k} Centroids created in MovieCentroids table.");
             }
             catch (Exception ex)
             {
@@ -88,13 +88,11 @@ namespace ANNIndexingSample.Services
             string sql = @"
                 DECLARE @TargetCluster INT;
 
-                -- STEP 1: Find nearest centroid (Probe 1)
                 SELECT TOP 1 @TargetCluster = cluster_id
                 FROM MovieCentroids
                 ORDER BY VECTOR_DISTANCE('euclidean', centroid_vector, CAST(@Query AS VECTOR(1536))) ASC;
 
-                -- STEP 2: Search only in that cluster (Probe 2)
-                SELECT TOP 5 title, genre, release_year
+                SELECT TOP 5 title, genre, release_year, description
                 FROM Movies
                 WHERE cluster_id = @TargetCluster
                 ORDER BY VECTOR_DISTANCE('euclidean', embedding, CAST(@Query AS VECTOR(1536))) ASC;";
@@ -103,9 +101,21 @@ namespace ANNIndexingSample.Services
             cmd.Parameters.AddWithValue("@Query", vectorJson);
 
             using SqlDataReader reader = await cmd.ExecuteReaderAsync();
+            int count = 1;
             while (await reader.ReadAsync())
             {
-                Console.WriteLine($"[ANN Match]: {reader.GetString(0)} ({reader.GetString(1)})");
+                string title = reader.GetString(0);
+                string genre = reader.GetString(1);
+                int year = reader.GetInt32(2);
+                string desc = reader.GetString(3);
+
+                Console.WriteLine($"{count}. {title.ToUpper()} ({year})");
+                Console.WriteLine($"   Genre: {genre}");
+
+                string displayDesc = desc.Length > 150 ? desc[..147] + "..." : desc;
+                Console.WriteLine($"   Description: {displayDesc}");
+                Console.WriteLine(new string('-', 50));
+                count++;
             }
 
             // 2. Stop Timing
@@ -121,20 +131,49 @@ namespace ANNIndexingSample.Services
             string vectorJson = $"[{string.Join(",", queryVector.Select(f => f.ToString(System.Globalization.CultureInfo.InvariantCulture)))}]";
             Stopwatch sw = Stopwatch.StartNew();
 
-            using SqlConnection conn = new(connString);
-            await conn.OpenAsync();
+            try
+            {
+                using SqlConnection conn = new(connString);
+                await conn.OpenAsync();
 
-            // No WHERE clause! We check every single embedding.
-            string sql = @"
-                        SELECT TOP 5 title, genre, release_year
-                        FROM Movies
-                        ORDER BY VECTOR_DISTANCE('euclidean', embedding, CAST(@Query AS VECTOR(1536))) ASC;";
+                // SQL Query selecting all necessary metadata
+                string sql = @"
+            SELECT TOP 5 title, genre, release_year, description
+            FROM Movies
+            ORDER BY VECTOR_DISTANCE('euclidean', embedding, CAST(@Query AS VECTOR(1536))) ASC;";
 
-            using SqlCommand cmd = new(sql, conn);
-            cmd.Parameters.AddWithValue("@Query", vectorJson);
+                using SqlCommand cmd = new(sql, conn);
+                cmd.Parameters.AddWithValue("@Query", vectorJson);
 
-            using SqlDataReader reader = await cmd.ExecuteReaderAsync();
-            while (await reader.ReadAsync()){}
+                using SqlDataReader reader = await cmd.ExecuteReaderAsync();
+
+                Console.WriteLine("\n==================================================");
+                Console.WriteLine("🎬  EXACT SEARCH RESULTS (GROUND TRUTH)");
+                Console.WriteLine("==================================================");
+
+                int count = 1;
+                while (await reader.ReadAsync())
+                {
+                    string title = reader.GetString(0);
+                    string genre = reader.GetString(1);
+                    int year = reader.GetInt32(2);
+                    string desc = reader.GetString(3);
+
+                    // Print formatted result
+                    Console.WriteLine($"{count}. {title.ToUpper()} ({year})");
+                    Console.WriteLine($"   🏷️ Genre: {genre}");
+
+                    // Shorten description for clean terminal view
+                    string shortDesc = desc.Length > 120 ? desc[..117] + "..." : desc;
+                    Console.WriteLine($"   📝 Info:  {shortDesc}");
+                    Console.WriteLine(new string('-', 50));
+                    count++;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ Database Error: {ex.Message}");
+            }
 
             sw.Stop();
             return (float)sw.Elapsed.TotalMilliseconds;
